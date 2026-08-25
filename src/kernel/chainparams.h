@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -157,6 +158,8 @@ public:
         DeploymentOptions dep_opts{};
         bool fastprune{false};
         bool enforce_bip94{false};
+        //! Height of the constant-inflation hard fork; inactive by default.
+        int inflation_fork_height{std::numeric_limits<int>::max()};
     };
 
     struct MainNetOptions {

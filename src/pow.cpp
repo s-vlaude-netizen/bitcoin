@@ -7,14 +7,29 @@
 
 #include <arith_uint256.h>
 #include <chain.h>
+#include <hash.h>
 #include <primitives/block.h>
 #include <uint256.h>
 #include <util/check.h>
+
+#include <algorithm>
+#include <limits>
 
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
 {
     assert(pindexLast != nullptr);
     unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+
+    const int nHeight{pindexLast->nHeight + 1};
+    if (params.IsHardForkActive(nHeight)) {
+        // The proof-of-work hash function changes at the fork height, so all
+        // difficulty accumulated by SHA-256 hardware becomes meaningless in one
+        // block. Reset to the minimum difficulty and let the per-block
+        // adjustment in CalculateNextWorkRequiredFork() find the new
+        // equilibrium.
+        if (nHeight == params.nHardForkHeight) return nProofOfWorkLimit;
+        return CalculateNextWorkRequiredFork(pindexLast, params);
+    }
 
     // Only change once per difficulty adjustment interval
     if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
@@ -84,11 +99,61 @@ unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nF
     return bnNew.GetCompact();
 }
 
+unsigned int CalculateNextWorkRequiredFork(const CBlockIndex* pindexLast, const Consensus::Params& params)
+{
+    assert(pindexLast != nullptr);
+    const arith_uint256 bnPowLimit{UintToArith256(params.powLimit)};
+
+    if (params.fPowNoRetargeting) return pindexLast->nBits;
+
+    // Until a full window of post-fork blocks exists, stay at the minimum
+    // difficulty the fork block reset to. Nothing better can be measured yet,
+    // and the point of the reset is to let the new hash function's (initially
+    // tiny) hash rate produce blocks at all.
+    const int64_t window{params.nPowForkAveragingWindow};
+    if (pindexLast->nHeight < params.nHardForkHeight + window) {
+        return bnPowLimit.GetCompact();
+    }
+
+    const CBlockIndex* pindexFirst{pindexLast->GetAncestor(pindexLast->nHeight - window)};
+    assert(pindexFirst);
+
+    // Work that the `window` blocks in (pindexFirst, pindexLast] actually
+    // produced, scaled to one target spacing.
+    arith_uint256 work{pindexLast->nChainWork - pindexFirst->nChainWork};
+    work *= params.nPowTargetSpacing;
+
+    // Time they took, clamped to [1/2, 2] of the expected timespan so that a
+    // single manipulated timestamp cannot move the difficulty arbitrarily far.
+    const int64_t expected_timespan{window * params.nPowTargetSpacing};
+    const int64_t actual_timespan{std::clamp<int64_t>(
+        pindexLast->GetBlockTime() - pindexFirst->GetBlockTime(),
+        expected_timespan / 2, expected_timespan * 2)};
+    work /= actual_timespan;
+
+    // `work` is now the work one block is expected to cost at the observed hash
+    // rate. Invert it back into a target: target = 2^256 / work - 1, which is
+    // the inverse of GetBlockProof().
+    if (work == 0) return bnPowLimit.GetCompact();
+    const arith_uint256 bnNew{(-work) / work};
+
+    if (bnNew > bnPowLimit) return bnPowLimit.GetCompact();
+    return bnNew.GetCompact();
+}
+
 // Check that on difficulty adjustments, the new difficulty does not increase
 // or decrease beyond the permitted limits.
 bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits)
 {
     if (params.fPowAllowMinDifficultyBlocks) return true;
+
+    // From the fork height on, the difficulty retargets on every block from a
+    // moving window of block times and chain work. That cannot be bounded from
+    // a single pair of nBits values, so this pre-sync heuristic has nothing to
+    // say about post-fork heights. Header spam is still bounded by
+    // nMinimumChainWork, and GetNextWorkRequired() re-derives the exact value
+    // in ContextualCheckBlockHeader().
+    if (params.IsHardForkActive(height)) return true;
 
     if (height % params.DifficultyAdjustmentInterval() == 0) {
         int64_t smallest_timespan = params.nPowTargetTimespan/4;
@@ -168,4 +233,24 @@ bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Par
         return false;
 
     return true;
+}
+
+uint256 GetBlockProofOfWorkHash(const CBlockHeader& block, int nHeight, const Consensus::Params& params)
+{
+    if (!params.IsHardForkActive(nHeight)) return block.GetHash();
+    return (PoWHashWriter{} << block).GetHash();
+}
+
+bool CheckProofOfWork(const CBlockHeader& block, int nHeight, const Consensus::Params& params)
+{
+    return CheckProofOfWork(GetBlockProofOfWorkHash(block, nHeight, params), block.nBits, params);
+}
+
+bool CheckProofOfWorkAnyAlgo(const CBlockHeader& block, const Consensus::Params& params)
+{
+    if (CheckProofOfWork(block.GetHash(), block.nBits, params)) return true;
+    // A header is only ever mined under one of the two hash functions, but here
+    // we do not know yet which height it will claim, so try the other one too.
+    if (params.nHardForkHeight == std::numeric_limits<int>::max()) return false;
+    return CheckProofOfWork((PoWHashWriter{} << block).GetHash(), block.nBits, params);
 }

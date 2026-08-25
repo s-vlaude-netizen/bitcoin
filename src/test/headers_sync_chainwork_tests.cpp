@@ -106,7 +106,7 @@ private:
 
 void HeadersGeneratorSetup::FindProofOfWork(CBlockHeader& starting_header)
 {
-    while (!CheckProofOfWork(starting_header.GetHash(), starting_header.nBits, Params().GetConsensus())) {
+    while (!CheckProofOfWorkAnyAlgo(starting_header, Params().GetConsensus())) {
         ++starting_header.nNonce;
     }
 }

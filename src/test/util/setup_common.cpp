@@ -461,7 +461,8 @@ CBlock TestChain100Setup::CreateBlock(
     }
     RegenerateCommitments(block, *Assert(m_node.chainman));
 
-    while (!CheckProofOfWork(block.GetHash(), block.nBits, m_node.chainman->GetConsensus())) ++block.nNonce;
+    const int height{WITH_LOCK(::cs_main, return m_node.chainman->ActiveHeight()) + 1};
+    while (!CheckProofOfWork(block, height, m_node.chainman->GetConsensus())) ++block.nNonce;
 
     return block;
 }

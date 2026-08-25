@@ -1841,9 +1841,10 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
     return result;
 }
 
-CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
+/** The subsidy Bitcoin's original halving schedule pays at nHeight. */
+static CAmount GetLegacyBlockSubsidy(int64_t nHeight, const Consensus::Params& consensusParams)
 {
-    int halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
+    int64_t halvings = nHeight / consensusParams.nSubsidyHalvingInterval;
     // Force block reward to zero when right shift is undefined.
     if (halvings >= 64)
         return 0;
@@ -1852,6 +1853,82 @@ CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
     // Subsidy is cut in half every 210,000 blocks which will occur approximately every 4 years.
     nSubsidy >>= halvings;
     return nSubsidy;
+}
+
+/**
+ * Money supply scheduled by the halving schedule after the first nHeight
+ * blocks, i.e. summed over heights 0..nHeight-1.
+ *
+ * This is the *scheduled* supply, not the spendable one: coinbase outputs that
+ * were never claimed in full (block 124724, the two BIP30 duplicates, and the
+ * miners who simply underpaid themselves) are counted here. Consensus only
+ * cares about the schedule, and using it keeps the emission a pure function of
+ * the height.
+ */
+static CAmount GetScheduledSupply(int64_t nHeight, const Consensus::Params& consensusParams)
+{
+    const int64_t interval{consensusParams.nSubsidyHalvingInterval};
+    CAmount supply{0};
+    for (int64_t height = 0; height < nHeight;) {
+        const CAmount subsidy{GetLegacyBlockSubsidy(height, consensusParams)};
+        if (subsidy == 0) break;
+        // Every block in [height, era_end) pays this same subsidy.
+        const int64_t era_end{std::min<int64_t>(nHeight, (height / interval + 1) * interval)};
+        supply += subsidy * (era_end - height);
+        height = era_end;
+    }
+    return supply;
+}
+
+/**
+ * Per-block subsidy that grows `supply` by the fork's nominal annual rate:
+ *
+ *     floor(supply * numerator / (denominator * blocks_per_year))
+ *
+ * Split into quotient and remainder so that the intermediate product cannot
+ * overflow an int64_t even for a supply close to MAX_MONEY. Flooring is what
+ * keeps the realised growth rate just *below* the nominal one.
+ */
+static CAmount GetInflationSubsidy(CAmount supply, const Consensus::Params& consensusParams)
+{
+    const int64_t num{consensusParams.nInflationRateNumerator};
+    const int64_t den{consensusParams.nInflationRateDenominator * consensusParams.nInflationBlocksPerYear};
+    Assume(num > 0 && den > 0);
+    return (supply / den) * num + ((supply % den) * num) / den;
+}
+
+CAmount GetBlockSubsidy(int nHeight, const Consensus::Params& consensusParams)
+{
+    if (!consensusParams.IsHardForkActive(nHeight)) {
+        return GetLegacyBlockSubsidy(nHeight, consensusParams);
+    }
+
+    // Perpetual emission. The schedule is divided into emission years of
+    // nInflationBlocksPerYear blocks; every block of a year pays the same
+    // subsidy, derived from the scheduled supply at the start of that year.
+    // Because both the supply and the subsidy are exact integers, every
+    // implementation reproduces the schedule bit for bit.
+    //
+    // contrib/devtools/inflation_schedule.py is the reference implementation of
+    // the loop below and prints the resulting schedule.
+    const int64_t blocks_per_year{consensusParams.nInflationBlocksPerYear};
+    const int64_t years{(int64_t{nHeight} - consensusParams.nHardForkHeight) / blocks_per_year};
+
+    CAmount supply{GetScheduledSupply(consensusParams.nHardForkHeight, consensusParams)};
+    for (int64_t year = 0; year < years; ++year) {
+        const CAmount subsidy{GetInflationSubsidy(supply, consensusParams)};
+        // Once emission has stopped it never restarts: the supply no longer
+        // grows, so every later year computes the same stopped subsidy.
+        if (subsidy == 0) return 0;
+        const CAmount emitted{subsidy * blocks_per_year};
+        if (emitted > MAX_MONEY - supply) return 0;
+        supply += emitted;
+    }
+
+    const CAmount subsidy{GetInflationSubsidy(supply, consensusParams)};
+    // Never mint past what the 64-bit money type and MoneyRange() can hold.
+    if (subsidy * blocks_per_year > MAX_MONEY - supply) return 0;
+    return subsidy;
 }
 
 CoinsViews::CoinsViews(DBParams db_params, CoinsViewOptions options)
@@ -3846,8 +3923,11 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
 
 static bool CheckBlockHeader(const CBlockHeader& block, BlockValidationState& state, const Consensus::Params& consensusParams, bool fCheckPOW = true)
 {
-    // Check proof of work matches claimed amount
-    if (fCheckPOW && !CheckProofOfWork(block.GetHash(), block.nBits, consensusParams))
+    // Check proof of work matches claimed amount. The height is not known here,
+    // so this accepts either of the two hash functions the chain uses; the
+    // height-aware check in AcceptBlockHeader() decides which one is actually
+    // required.
+    if (fCheckPOW && !CheckProofOfWorkAnyAlgo(block, consensusParams))
         return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, "high-hash", "proof of work failed");
 
     return true;
@@ -4040,7 +4120,7 @@ void ChainstateManager::GenerateCoinbaseCommitment(CBlock& block, const CBlockIn
 bool HasValidProofOfWork(std::span<const CBlockHeader> headers, const Consensus::Params& consensusParams)
 {
     return std::ranges::all_of(headers,
-                               [&](const auto& header) { return CheckProofOfWork(header.GetHash(), header.nBits, consensusParams); });
+                               [&](const auto& header) { return CheckProofOfWorkAnyAlgo(header, consensusParams); });
 }
 
 bool IsBlockMutated(const CBlock& block, bool check_witness_root)
@@ -4243,6 +4323,17 @@ bool ChainstateManager::AcceptBlockHeader(const CBlockHeader& block, BlockValida
         if (!ContextualCheckBlockHeader(block, state, *this, pindexPrev)) {
             LogDebug(BCLog::VALIDATION, "%s: Consensus::ContextualCheckBlockHeader: %s, %s\n", __func__, hash.ToString(), state.ToString());
             return false;
+        }
+
+        // Now that the height is known, re-check the proof of work with the hash
+        // function consensus mandates there. CheckBlockHeader() above only
+        // established that the header solves *one* of the chain's two hash
+        // functions, because it runs before pindexPrev has been looked up.
+        // This is the authoritative check, and every block reaches it: a block
+        // is only ever accepted after its header has passed through here.
+        if (!CheckProofOfWork(block, pindexPrev->nHeight + 1, GetConsensus())) {
+            LogDebug(BCLog::VALIDATION, "%s: proof of work does not use the hash function required at height %d: %s\n", __func__, pindexPrev->nHeight + 1, hash.ToString());
+            return state.Invalid(BlockValidationResult::BLOCK_INVALID_HEADER, "high-hash", "proof of work failed for this height");
         }
     }
     if (!min_pow_checked) {

@@ -89,6 +89,34 @@ struct Params {
     uint256 hashGenesisBlock;
     int nSubsidyHalvingInterval;
     /**
+     * Height at which the constant-inflation hard fork activates. From this
+     * height on, three consensus rules change at once (see
+     * doc/hardfork-inflation.md):
+     *   - the block subsidy follows a perpetual schedule that grows the money
+     *     supply by a constant, slightly-below-2% rate per year instead of
+     *     halving every nSubsidyHalvingInterval blocks,
+     *   - the proof of work is a truncated double SHA-512 instead of double
+     *     SHA-256, and
+     *   - the difficulty retargets on every block over a moving window of
+     *     nPowForkAveragingWindow blocks instead of every 2016 blocks.
+     * Set to std::numeric_limits<int>::max() to keep the fork inactive.
+     */
+    int nHardForkHeight{std::numeric_limits<int>::max()};
+    /** Number of blocks that make up one emission year after the fork. */
+    int nInflationBlocksPerYear{52560};
+    /**
+     * Nominal annual growth of the money supply after the fork, as the
+     * fraction nInflationRateNumerator/nInflationRateDenominator. Because the
+     * per-block subsidy is floored to whole satoshis, the realised growth is
+     * always a hair below this nominal rate.
+     */
+    int64_t nInflationRateNumerator{99};
+    int64_t nInflationRateDenominator{5000};
+    /** Number of blocks in the post-fork difficulty averaging window. */
+    int64_t nPowForkAveragingWindow{144};
+    /** Whether the hard fork's rules apply to a block at nHeight. */
+    bool IsHardForkActive(int nHeight) const { return nHeight >= nHardForkHeight; }
+    /**
      * Hashes of blocks that
      * - are known to be consensus valid, and
      * - buried in the chain, and

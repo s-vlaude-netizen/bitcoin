@@ -23,6 +23,7 @@
 #include <atomic>
 #include <cstdio>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <thread>
 
@@ -167,6 +168,20 @@ static int GetChainParams(const std::vector<std::string>& args, std::string& str
     result.pushKV("test_chain", params.IsTestChain());
     result.pushKV("genesis", HexStr(consensus.hashGenesisBlock));
     result.pushKV("subsidy_halving_interval", consensus.nSubsidyHalvingInterval);
+
+    {
+        UniValue fork{UniValue::VOBJ};
+        if (consensus.nHardForkHeight == std::numeric_limits<int>::max()) {
+            fork.pushKV("height", "never");
+        } else {
+            fork.pushKV("height", consensus.nHardForkHeight);
+        }
+        fork.pushKV("blocks_per_emission_year", consensus.nInflationBlocksPerYear);
+        fork.pushKV("annual_growth_numerator", consensus.nInflationRateNumerator);
+        fork.pushKV("annual_growth_denominator", consensus.nInflationRateDenominator);
+        fork.pushKV("pow_averaging_window", consensus.nPowForkAveragingWindow);
+        result.pushKV("inflation_fork", fork);
+    }
 
     if (consensus.signet_blocks) {
         UniValue signet{UniValue::VOBJ};

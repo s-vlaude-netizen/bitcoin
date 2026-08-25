@@ -13,6 +13,7 @@
 #include <util/chaintype.h>
 #include <validation.h>
 
+#include <limits>
 #include <string>
 
 #include <test/util/setup_common.h>
@@ -45,10 +46,19 @@ static void TestBlockSubsidyHalvings(int nSubsidyHalvingInterval)
     TestBlockSubsidyHalvings(consensusParams);
 }
 
+//! Mainnet parameters with the constant-inflation fork switched off, so that
+//! the original halving schedule can still be exercised on its own.
+static Consensus::Params NoForkParams(const Consensus::Params& params)
+{
+    Consensus::Params no_fork{params};
+    no_fork.nHardForkHeight = std::numeric_limits<int>::max();
+    return no_fork;
+}
+
 BOOST_AUTO_TEST_CASE(block_subsidy_test)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    TestBlockSubsidyHalvings(chainParams->GetConsensus()); // As in main
+    TestBlockSubsidyHalvings(NoForkParams(chainParams->GetConsensus())); // As in main
     TestBlockSubsidyHalvings(150); // As in regtest
     TestBlockSubsidyHalvings(1000); // Just another interval
 }
@@ -56,14 +66,68 @@ BOOST_AUTO_TEST_CASE(block_subsidy_test)
 BOOST_AUTO_TEST_CASE(subsidy_limit_test)
 {
     const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const Consensus::Params no_fork{NoForkParams(chainParams->GetConsensus())};
     CAmount nSum = 0;
     for (int nHeight = 0; nHeight < 14000000; nHeight += 1000) {
-        CAmount nSubsidy = GetBlockSubsidy(nHeight, chainParams->GetConsensus());
+        CAmount nSubsidy = GetBlockSubsidy(nHeight, no_fork);
         BOOST_CHECK(nSubsidy <= 50 * COIN);
         nSum += nSubsidy * 1000;
         BOOST_CHECK(MoneyRange(nSum));
     }
     BOOST_CHECK_EQUAL(nSum, CAmount{2099999997690000});
+}
+
+//! The constant-inflation hard fork replaces the halving schedule from
+//! nHardForkHeight on. The expected values below come from
+//! contrib/devtools/inflation_schedule.py, which implements the same integer
+//! recurrence independently.
+BOOST_AUTO_TEST_CASE(inflation_subsidy_test)
+{
+    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
+    const Consensus::Params& params{chainParams->GetConsensus()};
+    const int fork{params.nHardForkHeight};
+    const int64_t year{params.nInflationBlocksPerYear};
+
+    BOOST_CHECK_EQUAL(fork, 1'000'000);
+    BOOST_CHECK_EQUAL(year, 52'560);
+
+    // The last legacy block still halves, the fork block already inflates.
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork - 1, params), 312'500'000);
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork, params), 760'488'013);
+
+    // The subsidy is constant within an emission year and steps up between them.
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + year - 1, params), 760'488'013);
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + year, params), 775'545'676);
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + 2 * year, params), 790'901'480);
+
+    // The scheduled supply at the fork is the sum of the halving schedule, and
+    // each emission year adds just under the nominal 1.98 % to it.
+    const CAmount supply_at_fork{20'187'500 * COIN};
+    for (int64_t y : {int64_t{0}, int64_t{1}, int64_t{2}, int64_t{10}}) {
+        CAmount supply{supply_at_fork};
+        for (int64_t i = 0; i < y; ++i) {
+            supply += GetBlockSubsidy(fork + i * year, params) * year;
+        }
+        const CAmount emitted{GetBlockSubsidy(fork + y * year, params) * year};
+        // Realised growth is at most the nominal rate and within one satoshi
+        // per block of it.
+        BOOST_CHECK(emitted * params.nInflationRateDenominator <= supply * params.nInflationRateNumerator);
+        BOOST_CHECK((emitted + year) * params.nInflationRateDenominator > supply * params.nInflationRateNumerator);
+    }
+
+    // Emission is bounded: it stops before the supply could exceed MAX_MONEY,
+    // and once stopped it never restarts.
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + 235 * year, params) > 0, true);
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + 236 * year, params), 0);
+    BOOST_CHECK_EQUAL(GetBlockSubsidy(fork + 1000 * year, params), 0);
+
+    // Total supply stays inside MoneyRange() for the whole schedule.
+    CAmount supply{supply_at_fork};
+    for (int64_t y = 0; y < 240; ++y) {
+        supply += GetBlockSubsidy(fork + y * year, params) * year;
+        BOOST_CHECK(MoneyRange(supply));
+    }
+    BOOST_CHECK(supply > 2'000'000'000 * COIN);
 }
 
 BOOST_AUTO_TEST_CASE(signet_parse_tests)
