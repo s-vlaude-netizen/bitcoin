@@ -90,7 +90,9 @@ TX_MIN_STANDARD_VERSION = 1
 TX_MAX_STANDARD_VERSION = 3
 
 MAGIC_BYTES = {
-    "mainnet": b"\xf9\xbe\xb4\xd9",
+    # Mainnet moved away from Bitcoin's f9beb4d9 with the hard fork; see
+    # doc/hardfork-inflation.md.
+    "mainnet": b"\xc9\x1f\x02\x4e",
     "testnet4": b"\x1c\x16\x3f\x28",
     "regtest": b"\xfa\xbf\xb5\xda",
     "signet": b"\x0a\x03\xcf\x40",

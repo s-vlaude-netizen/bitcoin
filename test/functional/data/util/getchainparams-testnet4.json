@@ -3,6 +3,13 @@
   "test_chain": true,
   "genesis": "43f08bdab050e35b567c864b91f47f50ae725ae2de53bcfbbaf284da00000000",
   "subsidy_halving_interval": 210000,
+  "inflation_fork": {
+    "height": 250000,
+    "blocks_per_emission_year": 52560,
+    "annual_growth_numerator": 99,
+    "annual_growth_denominator": 5000,
+    "pow_averaging_window": 144
+  },
   "pow": {
     "limit": "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "target_spacing": 600,
