@@ -120,6 +120,14 @@ void ReadRegTestArgs(const ArgsManager& args, CChainParams::RegTestOptions& opti
     if (auto value = args.GetBoolArg("-fastprune")) options.fastprune = *value;
     if (HasTestOption(args, "bip94")) options.enforce_bip94 = true;
 
+    if (args.IsArgSet("-inflationforkheight")) {
+        const auto height{ToIntegral<int32_t>(args.GetArg("-inflationforkheight", ""))};
+        if (!height || *height < 0) {
+            throw std::runtime_error("Invalid height value for -inflationforkheight=<n>.");
+        }
+        options.inflation_fork_height = *height;
+    }
+
     HandleDeploymentArgs(args, options.dep_opts);
 }
 

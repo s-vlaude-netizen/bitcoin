@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <span>
 #include <utility>
@@ -112,6 +113,12 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         consensus.nSubsidyHalvingInterval = 210000;
+        // Constant-inflation hard fork; see doc/hardfork-inflation.md.
+        consensus.nHardForkHeight = 1'000'000; // expected in early 2027
+        consensus.nInflationBlocksPerYear = 52'560;
+        consensus.nInflationRateNumerator = 99;    // 99/5000 = 1.98 % nominal
+        consensus.nInflationRateDenominator = 5000; // annual money supply growth
+        consensus.nPowForkAveragingWindow = 144;
         consensus.script_flag_exceptions.emplace( // BIP16 exception
             uint256{"00000000000002dc756eebf4f49723ed8d30cc28a5f108eb94b1ba88ac4f9c22"}, SCRIPT_VERIFY_NONE);
         consensus.script_flag_exceptions.emplace( // Taproot exception
@@ -146,11 +153,13 @@ public:
          * The characters are rarely used upper ASCII, not valid as UTF-8, and produce
          * a large 32-bit integer with any alignment.
          */
-        pchMessageStart[0] = 0xf9;
-        pchMessageStart[1] = 0xbe;
-        pchMessageStart[2] = 0xb4;
-        pchMessageStart[3] = 0xd9;
-        nDefaultPort = 8333;
+        // Distinct from Bitcoin's f9beb4d9 so that the two networks cannot
+        // waste connection slots on each other after the fork.
+        pchMessageStart[0] = 0xc9;
+        pchMessageStart[1] = 0x1f;
+        pchMessageStart[2] = 0x02;
+        pchMessageStart[3] = 0x4e;
+        nDefaultPort = 8433;
         nPruneAfterHeight = 100000;
         m_assumed_blockchain_size = 856;
         m_assumed_chain_state_size = 14;
@@ -238,6 +247,12 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         consensus.nSubsidyHalvingInterval = 210000;
+        // Constant-inflation hard fork; see doc/hardfork-inflation.md.
+        consensus.nHardForkHeight = 5'000'000;
+        consensus.nInflationBlocksPerYear = 52'560;
+        consensus.nInflationRateNumerator = 99;    // 99/5000 = 1.98 % nominal
+        consensus.nInflationRateDenominator = 5000; // annual money supply growth
+        consensus.nPowForkAveragingWindow = 144;
         consensus.script_flag_exceptions.emplace( // BIP16 exception
             uint256{"00000000dd30457c001f4095d208cc1296b0eed002427aa599874af7a432b105"}, SCRIPT_VERIFY_NONE);
         consensus.BIP34Height = 21111;
@@ -340,6 +355,12 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         consensus.nSubsidyHalvingInterval = 210000;
+        // Constant-inflation hard fork; see doc/hardfork-inflation.md.
+        consensus.nHardForkHeight = 250'000;
+        consensus.nInflationBlocksPerYear = 52'560;
+        consensus.nInflationRateNumerator = 99;    // 99/5000 = 1.98 % nominal
+        consensus.nInflationRateDenominator = 5000; // annual money supply growth
+        consensus.nPowForkAveragingWindow = 144;
         consensus.BIP34Height = 1;
         consensus.BIP34Hash = uint256{};
         consensus.BIP65Height = 1;
@@ -486,6 +507,12 @@ public:
         consensus.signet_blocks = true;
         consensus.signet_challenge.assign(bin.begin(), bin.end());
         consensus.nSubsidyHalvingInterval = 210000;
+        // Constant-inflation hard fork; see doc/hardfork-inflation.md.
+        consensus.nHardForkHeight = 350'000;
+        consensus.nInflationBlocksPerYear = 52'560;
+        consensus.nInflationRateNumerator = 99;    // 99/5000 = 1.98 % nominal
+        consensus.nInflationRateDenominator = 5000; // annual money supply growth
+        consensus.nPowForkAveragingWindow = 144;
         consensus.BIP34Height = 1;
         consensus.BIP34Hash = uint256{};
         consensus.BIP65Height = 1;
@@ -569,6 +596,13 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         consensus.nSubsidyHalvingInterval = 150;
+        // Inactive unless -inflationforkheight is given. Activating it by
+        // default would change the subsidy of every regtest chain.
+        consensus.nHardForkHeight = opts.inflation_fork_height;
+        consensus.nInflationBlocksPerYear = 150; // short "year", as with the halving interval
+        consensus.nInflationRateNumerator = 99;    // 99/5000 = 1.98 % nominal
+        consensus.nInflationRateDenominator = 5000; // growth per emission year
+        consensus.nPowForkAveragingWindow = 144;
         consensus.BIP34Height = 1; // Always active unless overridden
         consensus.BIP34Hash = uint256();
         consensus.BIP65Height = 1;  // Always active unless overridden

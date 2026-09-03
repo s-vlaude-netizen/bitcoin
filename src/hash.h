@@ -10,6 +10,7 @@
 #include <crypto/common.h>
 #include <crypto/ripemd160.h>
 #include <crypto/sha256.h>
+#include <crypto/sha512.h>
 #include <prevector.h>
 #include <serialize.h>
 #include <span.h>
@@ -147,6 +148,52 @@ public:
 
     template <typename T>
     HashWriter& operator<<(const T& obj)
+    {
+        ::Serialize(*this, obj);
+        return *this;
+    }
+};
+
+/** A writer stream (for serialization) that computes the fork's proof-of-work
+ *  hash: double SHA-512, truncated to its leading 256 bits.
+ *
+ *  Used by GetBlockProofOfWorkHash() for blocks at or above
+ *  Consensus::Params::nHardForkHeight. SHA-512 shares SHA-256's design but
+ *  operates on 64-bit words with a different round count, constants and message
+ *  schedule, so SHA-256 mining hardware cannot compute it.
+ *
+ *  The truncation keeps the result comparable against the 256-bit compact
+ *  target in a block header's nBits field, so none of the difficulty machinery
+ *  has to grow a wider integer type. It is the same construction NIST uses for
+ *  SHA-512/256 and does not weaken the hash below 256 bits of preimage
+ *  resistance.
+ */
+class PoWHashWriter
+{
+private:
+    CSHA512 ctx;
+
+public:
+    void write(std::span<const std::byte> src)
+    {
+        ctx.Write(UCharCast(src.data()), src.size());
+    }
+
+    /** Compute the truncated double-SHA512 hash of all data written to this
+     * object.
+     *
+     * Invalidates this object.
+     */
+    uint256 GetHash()
+    {
+        unsigned char buf[CSHA512::OUTPUT_SIZE];
+        ctx.Finalize(buf);
+        ctx.Reset().Write(buf, CSHA512::OUTPUT_SIZE).Finalize(buf);
+        return uint256{std::span<const unsigned char>{buf, uint256::size()}};
+    }
+
+    template <typename T>
+    PoWHashWriter& operator<<(const T& obj)
     {
         ::Serialize(*this, obj);
         return *this;

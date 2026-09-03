@@ -7,12 +7,13 @@
 #define BITCOIN_POW_H
 
 #include <consensus/params.h>
+#include <uint256.h>
 
 #include <cstdint>
+#include <optional>
 
 class CBlockHeader;
 class CBlockIndex;
-class uint256;
 class arith_uint256;
 
 /**
@@ -28,6 +29,39 @@ std::optional<arith_uint256> DeriveTarget(unsigned int nBits, uint256 pow_limit)
 
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
 unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
+
+/** Per-block difficulty adjustment used from the hard fork height on. */
+unsigned int CalculateNextWorkRequiredFork(const CBlockIndex* pindexLast, const Consensus::Params&);
+
+/**
+ * The hash a block header has to grind below its target.
+ *
+ * Before Consensus::Params::nHardForkHeight this is the block hash itself
+ * (double SHA-256). From the fork height on it is a truncated double SHA-512,
+ * which is what makes the forked chain unmineable with SHA-256 ASICs. Note
+ * that the *identity* of a block -- CBlockHeader::GetHash(), used for
+ * hashPrevBlock, the block index and every wire message -- stays double
+ * SHA-256 at every height.
+ */
+uint256 GetBlockProofOfWorkHash(const CBlockHeader& block, int nHeight, const Consensus::Params&);
+
+/**
+ * Check a header's proof of work against its own nBits, using the hash
+ * function that consensus mandates at nHeight. This is the authoritative
+ * check; it is performed in AcceptBlockHeader(), once the header's predecessor
+ * has been looked up and the height is known.
+ */
+bool CheckProofOfWork(const CBlockHeader& block, int nHeight, const Consensus::Params&);
+
+/**
+ * Height-free variant for the paths that see a header before it has been
+ * connected to the block index (header spam filtering, reading a block back
+ * from disk). It accepts a header whose proof of work is valid under *either*
+ * hash function, which is all a denial-of-service pre-filter needs: the work
+ * that has to be spent is the same either way, and the height-aware check
+ * above still decides validity.
+ */
+bool CheckProofOfWorkAnyAlgo(const CBlockHeader& block, const Consensus::Params&);
 
 /** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
 bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);

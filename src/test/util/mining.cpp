@@ -67,7 +67,7 @@ std::vector<std::shared_ptr<CBlock>> CreateBlockChain(size_t total_height, const
         block.nBits = params.GenesisBlock().nBits;
         block.nNonce = 0;
 
-        while (!CheckProofOfWork(block.GetHash(), block.nBits, params.GetConsensus())) {
+        while (!CheckProofOfWork(block, static_cast<int>(height) + 1, params.GetConsensus())) {
             ++block.nNonce;
             assert(block.nNonce);
         }
@@ -103,7 +103,7 @@ bool BuildChain(const NodeContext& node, const CBlockIndex* pindex,
             block.hashMerkleRoot = BlockMerkleRoot(block);
         }
 
-        while (!CheckProofOfWork(block.GetHash(), block.nBits, consensus)) ++block.nNonce;
+        while (!CheckProofOfWork(block, pindex->nHeight + 1, consensus)) ++block.nNonce;
 
         chain_block = std::make_shared<CBlock>(std::move(block));
 
@@ -142,7 +142,9 @@ protected:
 
 COutPoint MineBlock(const NodeContext& node, std::shared_ptr<CBlock>& block)
 {
-    while (!CheckProofOfWork(block->GetHash(), block->nBits, Params().GetConsensus())) {
+    const CBlockIndex* prev{WITH_LOCK(::cs_main, return Assert(node.chainman)->m_blockman.LookupBlockIndex(block->hashPrevBlock))};
+    const int height{prev ? prev->nHeight + 1 : 0};
+    while (!CheckProofOfWork(*block, height, Params().GetConsensus())) {
         ++block->nNonce;
         assert(block->nNonce);
     }

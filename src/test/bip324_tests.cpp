@@ -21,6 +21,9 @@
 
 namespace {
 
+//! Bitcoin mainnet's message start bytes, which BIP324's published test vectors were computed with.
+constexpr MessageStartChars BITCOIN_MAINNET_MAGIC{0xf9, 0xbe, 0xb4, 0xd9};
+
 struct BIP324Test : BasicTestingSetup {
 void TestBIP324PacketVector(
     uint32_t in_idx,
@@ -60,7 +63,7 @@ void TestBIP324PacketVector(
     BIP324Cipher cipher(key, ellswift_ours);
     BOOST_CHECK(!cipher);
     BOOST_CHECK(cipher.GetOurPubKey() == ellswift_ours);
-    cipher.Initialize(ellswift_theirs, in_initiating);
+    cipher.Initialize(ellswift_theirs, in_initiating, /*self_decrypt=*/false, BITCOIN_MAINNET_MAGIC);
     BOOST_CHECK(cipher);
 
     // Compare session variables.
@@ -107,7 +110,7 @@ void TestBIP324PacketVector(
         BIP324Cipher dec_cipher(key, ellswift_ours);
         BOOST_CHECK(!dec_cipher);
         BOOST_CHECK(dec_cipher.GetOurPubKey() == ellswift_ours);
-        dec_cipher.Initialize(ellswift_theirs, (error == 1) ^ in_initiating, /*self_decrypt=*/true);
+        dec_cipher.Initialize(ellswift_theirs, (error == 1) ^ in_initiating, /*self_decrypt=*/true, BITCOIN_MAINNET_MAGIC);
         BOOST_CHECK(dec_cipher);
 
         // Compare session variables.
@@ -164,8 +167,12 @@ void TestBIP324PacketVector(
 BOOST_FIXTURE_TEST_SUITE(bip324_tests, BIP324Test)
 
 BOOST_AUTO_TEST_CASE(packet_test_vectors) {
-    // BIP324 key derivation uses network magic in the HKDF process. We use mainnet params here
-    // as that is what the test vectors are written for.
+    // BIP324 key derivation salts the HKDF with the network's message start bytes, which is what
+    // keeps sessions on different networks from interoperating. This chain has its own (see
+    // doc/hardfork-inflation.md), so BITCOIN_MAINNET_MAGIC is passed to Initialize() explicitly
+    // above: the vectors below are BIP324's published ones and are written against Bitcoin
+    // mainnet's f9beb4d9. Everything they exercise -- the ECDH, the HKDF, the stream ciphers and
+    // the AEAD -- is unchanged, only the salt differs.
     SelectParams(ChainType::MAIN);
 
     // The test vectors are converted using the following Python code in the BIP bip-0324/ directory:

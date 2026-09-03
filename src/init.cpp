@@ -524,6 +524,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
                              kernel::DEFAULT_XOR_BLOCKSDIR),
                    ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-fastprune", "Use smaller block files and lower minimum prune height for testing purposes", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
+    argsman.AddArg("-inflationforkheight=<n>", "Activate the constant-inflation hard fork at this height (regtest-only, default: never)", ArgsManager::ALLOW_ANY | ArgsManager::DEBUG_ONLY, OptionsCategory::DEBUG_TEST);
 #if HAVE_SYSTEM
     argsman.AddArg("-blocknotify=<cmd>", "Execute command when the best block changes (%s in cmd is replaced by block hash)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
 #endif
@@ -1194,6 +1195,9 @@ bool AppInitParameterInteraction(const ArgsManager& args)
         }
         if (args.IsArgSet("-vbparams")) {
             return InitError(_("The -vbparams option may not be used on mainnet."));
+        }
+        if (args.IsArgSet("-inflationforkheight")) {
+            return InitError(_("The -inflationforkheight option may not be used on mainnet."));
         }
     }
 

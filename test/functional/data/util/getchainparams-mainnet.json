@@ -3,6 +3,13 @@
   "test_chain": false,
   "genesis": "6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000",
   "subsidy_halving_interval": 210000,
+  "inflation_fork": {
+    "height": 1000000,
+    "blocks_per_emission_year": 52560,
+    "annual_growth_numerator": 99,
+    "annual_growth_denominator": 5000,
+    "pow_averaging_window": 144
+  },
   "pow": {
     "limit": "00000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "target_spacing": 600,
@@ -10,8 +17,8 @@
     "mindiff_blocks": "no"
   },
   "net": {
-    "default_port": 8333,
-    "magic": "f9beb4d9",
+    "default_port": 8433,
+    "magic": "c91f024e",
     "dns_seeds": [
       "dnsseed.bluematt.me.",
       "seed.bitcoin.jonasschnelli.ch.",

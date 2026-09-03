@@ -4,11 +4,17 @@
 
 #include <chain.h>
 #include <chainparams.h>
+#include <crypto/sha512.h>
 #include <pow.h>
+#include <primitives/block.h>
+#include <span.h>
+#include <streams.h>
 #include <test/util/random.h>
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
 #include <util/chaintype.h>
+
+#include <vector>
 
 #include <boost/test/unit_test.hpp>
 
@@ -183,6 +189,146 @@ void sanity_check_chainparams(const ArgsManager& args, ChainType chain_type)
         targ_max /= consensus.nPowTargetTimespan*4;
         BOOST_CHECK(UintToArith256(consensus.powLimit) < targ_max);
     }
+}
+
+/* The constant-inflation hard fork swaps the proof-of-work hash function at
+ * nHardForkHeight: double SHA-256 below it, truncated double SHA-512 from it
+ * on. The block hash itself stays double SHA-256 at every height. */
+BOOST_AUTO_TEST_CASE(fork_pow_hash)
+{
+    const auto chainParams{CreateChainParams(*m_node.args, ChainType::MAIN)};
+    const auto& consensus{chainParams->GetConsensus()};
+    const CBlockHeader header{chainParams->GenesisBlock()};
+
+    BOOST_CHECK_EQUAL(GetBlockProofOfWorkHash(header, 0, consensus), header.GetHash());
+    BOOST_CHECK_EQUAL(GetBlockProofOfWorkHash(header, consensus.nHardForkHeight - 1, consensus), header.GetHash());
+
+    const uint256 fork_hash{GetBlockProofOfWorkHash(header, consensus.nHardForkHeight, consensus)};
+    BOOST_CHECK(fork_hash != header.GetHash());
+
+    // Recompute it independently of PoWHashWriter: SHA-512(SHA-512(header)),
+    // keeping the leading 256 bits.
+    DataStream ss;
+    ss << header;
+    BOOST_CHECK_EQUAL(ss.size(), 80U);
+    unsigned char buf[CSHA512::OUTPUT_SIZE];
+    CSHA512().Write(UCharCast(ss.data()), ss.size()).Finalize(buf);
+    CSHA512().Write(buf, CSHA512::OUTPUT_SIZE).Finalize(buf);
+    BOOST_CHECK_EQUAL(fork_hash, uint256(std::span<const unsigned char>{buf, uint256::size()}));
+}
+
+/* Which hash function a header has to satisfy is decided by its height, while
+ * the height-free pre-filter accepts either. */
+BOOST_AUTO_TEST_CASE(fork_pow_check_by_height)
+{
+    Consensus::Params consensus{CreateChainParams(*m_node.args, ChainType::REGTEST)->GetConsensus()};
+    consensus.nHardForkHeight = 100;
+
+    CBlockHeader header;
+    header.nVersion = 1;
+    header.nTime = 1231006505;
+    // regtest's pow limit is ~2^255, so roughly half of all nonces solve either
+    // hash function and the loops below terminate after a handful of tries.
+    header.nBits = UintToArith256(consensus.powLimit).GetCompact();
+
+    const auto solves = [&](const CBlockHeader& h, int height) {
+        return CheckProofOfWork(GetBlockProofOfWorkHash(h, height, consensus), h.nBits, consensus);
+    };
+
+    // A header that solves only the legacy hash is valid below the fork height
+    // and invalid from it on.
+    CBlockHeader legacy_only{header};
+    while (!solves(legacy_only, 0) || solves(legacy_only, 100)) ++legacy_only.nNonce;
+    BOOST_CHECK(CheckProofOfWork(legacy_only, 99, consensus));
+    BOOST_CHECK(!CheckProofOfWork(legacy_only, 100, consensus));
+    BOOST_CHECK(CheckProofOfWorkAnyAlgo(legacy_only, consensus));
+
+    // ... and the other way round for a header that solves only SHA-512d.
+    CBlockHeader fork_only{header};
+    while (solves(fork_only, 0) || !solves(fork_only, 100)) ++fork_only.nNonce;
+    BOOST_CHECK(!CheckProofOfWork(fork_only, 99, consensus));
+    BOOST_CHECK(CheckProofOfWork(fork_only, 100, consensus));
+    BOOST_CHECK(CheckProofOfWorkAnyAlgo(fork_only, consensus));
+
+    // A header that solves neither is rejected everywhere.
+    CBlockHeader neither{header};
+    while (solves(neither, 0) || solves(neither, 100)) ++neither.nNonce;
+    BOOST_CHECK(!CheckProofOfWork(neither, 99, consensus));
+    BOOST_CHECK(!CheckProofOfWork(neither, 100, consensus));
+    BOOST_CHECK(!CheckProofOfWorkAnyAlgo(neither, consensus));
+}
+
+/* From the fork height on the difficulty retargets on every block over a
+ * moving window, after a one-off reset to the minimum. */
+BOOST_AUTO_TEST_CASE(fork_difficulty_adjustment)
+{
+    const auto consensus{CreateChainParams(*m_node.args, ChainType::MAIN)->GetConsensus()};
+    const int fork{consensus.nHardForkHeight};
+    const int64_t window{consensus.nPowForkAveragingWindow};
+    const int64_t spacing{consensus.nPowTargetSpacing};
+    const uint32_t pow_limit_bits{UintToArith256(consensus.powLimit).GetCompact()};
+    const CBlockHeader dummy_header;
+
+    // The fork block itself resets to minimum difficulty: all the work that
+    // SHA-256 hardware accumulated says nothing about SHA-512 hash rate.
+    {
+        CBlockIndex last;
+        last.nHeight = fork - 1;
+        last.nBits = 0x1703098c; // a real, very high Bitcoin difficulty
+        BOOST_CHECK_EQUAL(GetNextWorkRequired(&last, &dummy_header, consensus), pow_limit_bits);
+    }
+
+    // Until a full window of post-fork blocks exists, difficulty stays there.
+    {
+        CBlockIndex last;
+        last.nHeight = fork + window - 1;
+        last.nBits = pow_limit_bits;
+        BOOST_CHECK_EQUAL(GetNextWorkRequired(&last, &dummy_header, consensus), pow_limit_bits);
+    }
+
+    // With a full window, the next target is derived from the work and the time
+    // the window actually took. Use a target well below the pow limit so the
+    // result can move in both directions without being clamped.
+    const uint32_t base_bits{0x1c00ffff};
+    const auto next_target = [&](int64_t actual_spacing) {
+        std::vector<CBlockIndex> chain(window + 1);
+        arith_uint256 work{0};
+        for (int64_t i = 0; i <= window; ++i) {
+            CBlockIndex& index{chain[i]};
+            index.nHeight = fork + static_cast<int>(i);
+            index.nBits = base_bits;
+            index.nTime = static_cast<uint32_t>(1'700'000'000 + i * actual_spacing);
+            index.pprev = i > 0 ? &chain[i - 1] : nullptr;
+            work += GetBlockProof(index);
+            index.nChainWork = work;
+        }
+        arith_uint256 target;
+        target.SetCompact(GetNextWorkRequired(&chain[window], &dummy_header, consensus));
+        return target;
+    };
+
+    arith_uint256 base_target;
+    base_target.SetCompact(base_bits);
+
+    // Within a tenth of a percent -- the compact encoding loses the low bits.
+    const auto close_to = [](const arith_uint256& actual, const arith_uint256& expected) {
+        return actual * 1000 <= expected * 1001 && actual * 1001 >= expected * 1000;
+    };
+
+    BOOST_CHECK(close_to(next_target(spacing), base_target));
+    // Blocks arriving twice as fast halve the target, i.e. double the difficulty.
+    BOOST_CHECK(close_to(next_target(spacing / 2), base_target / 2));
+    // Blocks arriving half as fast double it.
+    BOOST_CHECK(close_to(next_target(spacing * 2), base_target * 2));
+    // Beyond that the timespan is clamped, so a wildly wrong timestamp cannot
+    // move the difficulty further than a factor of two per block.
+    BOOST_CHECK_EQUAL(next_target(spacing / 20).GetCompact(), next_target(spacing / 2).GetCompact());
+    BOOST_CHECK_EQUAL(next_target(spacing * 20).GetCompact(), next_target(spacing * 2).GetCompact());
+
+    // The pre-sync heuristic cannot bound a per-block retarget, so it accepts
+    // any transition from the fork height on.
+    BOOST_CHECK(PermittedDifficultyTransition(consensus, fork, base_bits, pow_limit_bits));
+    BOOST_CHECK(!PermittedDifficultyTransition(consensus, fork - 1, base_bits, pow_limit_bits));
 }
 
 BOOST_AUTO_TEST_CASE(ChainParams_MAIN_sanity)
